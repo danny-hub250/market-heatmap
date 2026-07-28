@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Market">
+<meta name="theme-color" content="#0a0a0c">
+<title>Market Heatmap</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+  :root{--bg:#0a0a0c;--panel:#141418;--border:#26262e;--text:#e8e8ec;--muted:#7a7a86;--accent:#3ba1e0;}
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;}
+  body{
+    background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    display:flex;flex-direction:column;overflow:hidden;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  header{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--panel);flex-shrink:0;}
+  header .brand{font-weight:700;font-size:14px;letter-spacing:.02em;white-space:nowrap;}
+  header .brand span{color:var(--accent);}
+  header .date{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;}
+  header .status{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);}
+  header .dot{width:8px;height:8px;border-radius:50%;background:#444;transition:background .3s;flex-shrink:0;}
+  header .dot.live{background:#2ecc71;box-shadow:0 0 6px #2ecc71;animation:pulse 2s infinite;}
+  header .dot.err{background:#e74c3c;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
+  header button{background:transparent;border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:8px;font-size:12px;cursor:pointer;min-height:34px;}
+  header button:active{background:#22222a;}
+  #chart{flex:1;position:relative;overflow:hidden;}
+  svg{display:block;width:100%;height:100%;}
+  .sector-label{fill:rgba(255,255,255,.72);font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;pointer-events:none;}
+  .cell{cursor:pointer;}
+  .cell text{pointer-events:none;}
+  #tip{position:absolute;pointer-events:none;background:rgba(15,15,20,.97);border:1px solid var(--border);border-radius:10px;padding:11px 13px;font-size:13px;opacity:0;transition:opacity .12s;box-shadow:0 8px 28px rgba(0,0,0,.6);z-index:10;min-width:140px;}
+  #tip .t-sym{font-weight:700;font-size:15px;}
+  #tip .t-name{color:var(--muted);font-size:11px;margin-bottom:7px;}
+  #tip .t-row{display:flex;justify-content:space-between;gap:16px;font-variant-numeric:tabular-nums;}
+  #tip .t-row span:last-child{font-weight:600;}
+  footer{display:flex;align-items:center;gap:6px;padding:8px 14px;border-top:1px solid var(--border);background:var(--panel);font-size:11px;color:var(--muted);flex-shrink:0;}
+  .legend-bar{display:flex;height:12px;border-radius:3px;overflow:hidden;}
+  .legend-bar div{width:22px;}
+  #lastUpdate{margin-left:auto;text-align:right;font-variant-numeric:tabular-nums;}
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">MARKET <span>HEATMAP</span></div>
+    <div class="date" id="date"></div>
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <button id="refresh">새로고침</button>
+    </div>
+  </header>
+  <div id="chart"><div id="tip"></div></div>
+  <footer>
+    <span>-3%</span>
+    <div class="legend-bar" id="legendBar"></div>
+    <span>+3%</span>
+    <span id="lastUpdate">대기 중</span>
+  </footer>
+<script>
+const API_KEY = "d8sf4gpr01qq7apv7vfgd8sf4gpr01qq7apv7vg0";
+
+const ALL_STOCKS=[
+ {s:"MSFT",n:"Microsoft",sector:"Technology",weight:310},{s:"AAPL",n:"Apple",sector:"Technology",weight:305},{s:"NVDA",n:"NVIDIA",sector:"Technology",weight:300},{s:"AVGO",n:"Broadcom",sector:"Technology",weight:130},{s:"ORCL",n:"Oracle",sector:"Technology",weight:55},{s:"PLTR",n:"Palantir",sector:"Technology",weight:28},{s:"CRWD",n:"CrowdStrike",sector:"Technology",weight:22},{s:"PANW",n:"Palo Alto",sector:"Technology",weight:20},{s:"SNPS",n:"Synopsys",sector:"Technology",weight:14},{s:"FTNT",n:"Fortinet",sector:"Technology",weight:14},{s:"AMD",n:"AMD",sector:"Technology",weight:75},{s:"MU",n:"Micron",sector:"Technology",weight:40},{s:"AMAT",n:"Applied Materials",sector:"Technology",weight:35},{s:"LRCX",n:"Lam Research",sector:"Technology",weight:26},{s:"KLAC",n:"KLA",sector:"Technology",weight:20},{s:"TXN",n:"Texas Instr.",sector:"Technology",weight:30},{s:"INTC",n:"Intel",sector:"Technology",weight:24},{s:"QCOM",n:"Qualcomm",sector:"Technology",weight:22},{s:"ADI",n:"Analog Devices",sector:"Technology",weight:18},{s:"MRVL",n:"Marvell",sector:"Technology",weight:14},{s:"DELL",n:"Dell",sector:"Technology",weight:15},{s:"SNDK",n:"SanDisk",sector:"Technology",weight:10},{s:"ANET",n:"Arista",sector:"Technology",weight:16},{s:"WDC",n:"Western Digital",sector:"Technology",weight:8},{s:"STX",n:"Seagate",sector:"Technology",weight:7},{s:"CRM",n:"Salesforce",sector:"Technology",weight:45},{s:"NOW",n:"ServiceNow",sector:"Technology",weight:32},{s:"UBER",n:"Uber",sector:"Technology",weight:30},{s:"CSCO",n:"Cisco",sector:"Technology",weight:40},{s:"IBM",n:"IBM",sector:"Technology",weight:30},{s:"APH",n:"Amphenol",sector:"Technology",weight:14},{s:"ADP",n:"ADP",sector:"Technology",weight:16},{s:"SKHY",n:"SK Hynix ADR",sector:"Technology",weight:55},
+ {s:"AMZN",n:"Amazon",sector:"Consumer Cyclical",weight:230},{s:"TSLA",n:"Tesla",sector:"Consumer Cyclical",weight:110},{s:"HD",n:"Home Depot",sector:"Consumer Cyclical",weight:40},{s:"TJX",n:"TJX",sector:"Consumer Cyclical",weight:14},
+ {s:"GOOGL",n:"Alphabet",sector:"Communication Services",weight:210},{s:"META",n:"Meta",sector:"Communication Services",weight:150},{s:"NFLX",n:"Netflix",sector:"Communication Services",weight:45},{s:"DIS",n:"Disney",sector:"Communication Services",weight:20},{s:"TMUS",n:"T-Mobile",sector:"Communication Services",weight:24},{s:"VZ",n:"Verizon",sector:"Communication Services",weight:18},{s:"T",n:"AT&T",sector:"Communication Services",weight:16},
+ {s:"WMT",n:"Walmart",sector:"Consumer Defensive",weight:55},{s:"COST",n:"Costco",sector:"Consumer Defensive",weight:40},{s:"PG",n:"P&G",sector:"Consumer Defensive",weight:38},{s:"KO",n:"Coca-Cola",sector:"Consumer Defensive",weight:30},{s:"PM",n:"Philip Morris",sector:"Consumer Defensive",weight:20},{s:"PEP",n:"PepsiCo",sector:"Consumer Defensive",weight:22},
+ {s:"LLY",n:"Eli Lilly",sector:"Healthcare",weight:70},{s:"JNJ",n:"J&J",sector:"Healthcare",weight:38},{s:"UNH",n:"UnitedHealth",sector:"Healthcare",weight:45},{s:"ABBV",n:"AbbVie",sector:"Healthcare",weight:30},{s:"ABT",n:"Abbott",sector:"Healthcare",weight:20},{s:"CVS",n:"CVS",sector:"Healthcare",weight:14},{s:"SYK",n:"Stryker",sector:"Healthcare",weight:14},{s:"TMO",n:"Thermo Fisher",sector:"Healthcare",weight:20},{s:"AMGN",n:"Amgen",sector:"Healthcare",weight:16},{s:"PFE",n:"Pfizer",sector:"Healthcare",weight:16},{s:"MRK",n:"Merck",sector:"Healthcare",weight:20},{s:"GILD",n:"Gilead",sector:"Healthcare",weight:12},{s:"BMY",n:"Bristol Myers",sector:"Healthcare",weight:12},{s:"HCA",n:"HCA",sector:"Healthcare",weight:8},
+ {s:"JPM",n:"JPMorgan",sector:"Financial",weight:60},{s:"V",n:"Visa",sector:"Financial",weight:55},{s:"BRK.B",n:"Berkshire",sector:"Financial",weight:50},{s:"MA",n:"Mastercard",sector:"Financial",weight:42},{s:"BAC",n:"Bank of America",sector:"Financial",weight:30},{s:"WFC",n:"Wells Fargo",sector:"Financial",weight:24},{s:"MS",n:"Morgan Stanley",sector:"Financial",weight:20},{s:"GS",n:"Goldman Sachs",sector:"Financial",weight:18},{s:"AXP",n:"Amex",sector:"Financial",weight:20},{s:"BX",n:"Blackstone",sector:"Financial",weight:18},{s:"SCHW",n:"Schwab",sector:"Financial",weight:14},{s:"C",n:"Citigroup",sector:"Financial",weight:14},{s:"SPGI",n:"S&P Global",sector:"Financial",weight:14},{s:"PGR",n:"Progressive",sector:"Financial",weight:14},{s:"CB",n:"Chubb",sector:"Financial",weight:12},
+ {s:"GE",n:"GE Aerospace",sector:"Industrials",weight:24},{s:"CAT",n:"Caterpillar",sector:"Industrials",weight:20},{s:"BA",n:"Boeing",sector:"Industrials",weight:16},{s:"RTX",n:"RTX",sector:"Industrials",weight:18},{s:"GEV",n:"GE Vernova",sector:"Industrials",weight:14},{s:"ETN",n:"Eaton",sector:"Industrials",weight:14},{s:"DE",n:"Deere",sector:"Industrials",weight:14},{s:"UNP",n:"Union Pacific",sector:"Industrials",weight:14},{s:"PH",n:"Parker",sector:"Industrials",weight:10},
+ {s:"XOM",n:"Exxon",sector:"Energy",weight:40},{s:"CVX",n:"Chevron",sector:"Energy",weight:28},
+ {s:"AMT",n:"American Tower",sector:"Real Estate",weight:10},{s:"PLD",n:"Prologis",sector:"Real Estate",weight:10},
+ {s:"NEE",n:"NextEra",sector:"Utilities",weight:14},{s:"SO",n:"Southern Co",sector:"Utilities",weight:10},{s:"DUK",n:"Duke",sector:"Utilities",weight:10},
+ {s:"LIN",n:"Linde",sector:"Basic Materials",weight:20},{s:"FCX",n:"Freeport",sector:"Basic Materials",weight:8}
+];
+
+const SECTORS=["Technology","Communication Services","Consumer Cyclical"];
+const STOCKS=ALL_STOCKS.filter(d=>SECTORS.includes(d.sector));
+
+const colorScale=d3.scaleLinear().domain([-3,-1.2,0,1.2,3]).range(["#c0392b","#7a2e28","#2b2b30","#2b6b3f","#27ae60"]).clamp(true);
+(function(){const bar=document.getElementById("legendBar");for(let p=-3;p<=3;p+=0.5){const d=document.createElement("div");d.style.background=colorScale(p);bar.appendChild(d);}})();
+
+const tip=document.getElementById("tip"),chartEl=document.getElementById("chart");
+let tipTimer=null;
+
+function render(quotes){
+ const w=chartEl.clientWidth,h=chartEl.clientHeight;
+ const portrait = h > w;
+ d3.select("#chart svg").remove();
+ const svg=d3.select("#chart").append("svg").attr("width",w).attr("height",h);
+ const bySector=d3.group(STOCKS,d=>d.sector);
+ const root=d3.hierarchy({children:Array.from(bySector,([sector,items])=>({sector,children:items}))}).sum(d=>d.weight).sort((a,b)=>b.value-a.value);
+ d3.treemap()
+   .tile(portrait ? d3.treemapSliceDice : d3.treemapSquarify)
+   .size([w,h]).paddingOuter(4).paddingTop(20).paddingInner(1.5).round(true)(root);
+ svg.selectAll(".sector-label").data(root.children).join("text").attr("class","sector-label").attr("x",d=>d.x0+5).attr("y",d=>d.y0+13).text(d=>d.data.sector.toUpperCase());
+ const cell=svg.selectAll(".cell").data(root.leaves()).join("g").attr("class","cell").attr("transform",d=>`translate(${d.x0},${d.y0})`);
+ cell.append("rect").attr("width",d=>Math.max(0,d.x1-d.x0)).attr("height",d=>Math.max(0,d.y1-d.y0)).attr("rx",2).attr("fill",d=>{const q=quotes[d.data.s];return(q&&q.dp!=null)?colorScale(q.dp):"#2b2b30";}).attr("stroke","rgba(0,0,0,0.35)").attr("stroke-width",1);
+ cell.each(function(d){const bw=d.x1-d.x0,bh=d.y1-d.y0;if(bw<24||bh<16)return;const q=quotes[d.data.s];const dp=(q&&q.dp!=null)?q.dp:null;const g=d3.select(this);const fs=Math.max(9,Math.min(bw/4.2,bh/3,24));
+  g.append("text").attr("x",bw/2).attr("y",bh/2-(bh>32?fs*0.25:0)).attr("text-anchor","middle").attr("dominant-baseline","middle").attr("fill","#fff").attr("font-weight",700).attr("font-size",fs).text(d.data.s);
+  if(bh>32&&dp!=null){g.append("text").attr("x",bw/2).attr("y",bh/2+fs*0.75).attr("text-anchor","middle").attr("dominant-baseline","middle").attr("fill","rgba(255,255,255,0.85)").attr("font-size",Math.max(8,fs*0.5)).text((dp>=0?"+":"")+dp.toFixed(2)+"%");}});
+ cell.on("click",function(event,d){
+  const q=quotes[d.data.s];const dp=q&&q.dp!=null?q.dp:null;const price=q&&q.c!=null?q.c:null;
+  tip.innerHTML=`<div class="t-sym">${d.data.s}</div><div class="t-name">${d.data.n}</div>`+(price!=null?`<div class="t-row"><span>가격</span><span>$${price.toFixed(2)}</span></div>`:"")+(dp!=null?`<div class="t-row"><span>등락</span><span style="color:${dp>=0?'#2ecc71':'#e74c3c'}">${dp>=0?'+':''}${dp.toFixed(2)}%</span></div>`:`<div class="t-row"><span>데이터</span><span>-</span></div>`);
+  tip.style.opacity=1;
+  const r=chartEl.getBoundingClientRect();
+  let x=event.clientX-r.left+12,y=event.clientY-r.top+12;
+  const tw=tip.offsetWidth,th=tip.offsetHeight;
+  if(x+tw>r.width)x=event.clientX-r.left-tw-12;
+  if(y+th>r.height)y=event.clientY-r.top-th-12;
+  tip.style.left=Math.max(4,x)+"px";tip.style.top=Math.max(4,y)+"px";
+  clearTimeout(tipTimer);tipTimer=setTimeout(()=>{tip.style.opacity=0;},2500);
+ });
+}
+
+function setStatus(cls){document.getElementById("dot").className="dot"+(cls?" "+cls:"");}
+async function fetchQuote(sym){const url=`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${API_KEY}`;const res=await fetch(url);if(!res.ok)throw new Error("HTTP "+res.status);return res.json();}
+const quotes={};
+async function loadAll(){
+ document.getElementById("lastUpdate").textContent="불러오는 중…";setStatus("live");
+ const batchSize=25,delayMs=1100;let failed=0;
+ for(let i=0;i<STOCKS.length;i+=batchSize){const batch=STOCKS.slice(i,i+batchSize);
+  await Promise.all(batch.map(async st=>{try{const q=await fetchQuote(st.s);if(q&&typeof q.dp==="number")quotes[st.s]=q;}catch(e){failed++;}}));
+  render(quotes);if(i+batchSize<STOCKS.length)await new Promise(r=>setTimeout(r,delayMs));}
+ document.getElementById("lastUpdate").textContent=new Date().toLocaleTimeString("ko-KR")+(failed?` (${failed} 실패)`:"");
+ setStatus(failed>15?"err":"live");
+}
+function initDate(){const d=new Date();const days=["일","월","화","수","목","금","토"];document.getElementById("date").textContent=`${d.getMonth()+1}/${d.getDate()} ${days[d.getDay()]}`;}
+initDate();render(quotes);loadAll();
+document.getElementById("refresh").addEventListener("click",loadAll);
+let rt;window.addEventListener("resize",()=>{clearTimeout(rt);rt=setTimeout(()=>render(quotes),150);});
+window.addEventListener("orientationchange",()=>{setTimeout(()=>render(quotes),300);});
+setInterval(loadAll,5*60*1000);
+</script>
+</body>
+</html>
