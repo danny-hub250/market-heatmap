@@ -85,6 +85,39 @@ const STOCKS=ALL_STOCKS.filter(d=>SECTORS.includes(d.sector));
 const colorScale=d3.scaleLinear().domain([-3,-1.2,0,1.2,3]).range(["#c0392b","#7a2e28","#2b2b30","#2b6b3f","#27ae60"]).clamp(true);
 (function(){const bar=document.getElementById("legendBar");for(let p=-3;p<=3;p+=0.5){const d=document.createElement("div");d.style.background=colorScale(p);bar.appendChild(d);}})();
 
+// 상자 크기 = 실시간 시가총액(가격 × 발행주식수). 발행주식수는 Finnhub의
+// company profile(stock/profile2)에서 한 번만 받아와 캐시하고(자주 안 바뀌므로
+// localStorage에 7일간 보관), 실시간으로 갱신되는 가격(quote)과 곱해서 매번
+// 다시 계산한다. 이렇게 하면 삼성전자/엔비디아처럼 실제 시총이 큰 종목이
+// 실제 비중만큼 크게 표시되고, 가격이 움직일 때마다 크기도 같이 움직인다.
+// 아직 발행주식수를 못 받아온 종목은 weight × FALLBACK_CAP_PER_WEIGHT로
+// 대략적인 크기를 임시로 쓴다.
+const SHARES_CACHE_KEY="marketHeatmapShares_v1";
+const SHARES_CACHE_TTL_MS=7*24*60*60*1000;
+const FALLBACK_CAP_PER_WEIGHT=1e10;
+
+let shares={};
+(function loadSharesCache(){
+ try{
+  const raw=localStorage.getItem(SHARES_CACHE_KEY);
+  if(!raw)return;
+  const parsed=JSON.parse(raw);
+  if(parsed&&parsed.ts&&(Date.now()-parsed.ts)<SHARES_CACHE_TTL_MS&&parsed.data)shares=parsed.data;
+ }catch(e){}
+})();
+function saveSharesCache(){
+ try{localStorage.setItem(SHARES_CACHE_KEY,JSON.stringify({ts:Date.now(),data:shares}));}catch(e){}
+}
+
+function formatCapUSD(usd){
+ if(usd==null||Number.isNaN(usd))return null;
+ const abs=Math.abs(usd);
+ if(abs>=1e12)return "$"+(usd/1e12).toFixed(2)+"T";
+ if(abs>=1e9)return "$"+(usd/1e9).toFixed(1)+"B";
+ if(abs>=1e6)return "$"+(usd/1e6).toFixed(1)+"M";
+ return "$"+usd.toFixed(0);
+}
+
 const tip=document.getElementById("tip"),chartEl=document.getElementById("chart");
 let tipTimer=null;
 
@@ -94,7 +127,11 @@ function render(quotes){
  d3.select("#chart svg").remove();
  const svg=d3.select("#chart").append("svg").attr("width",w).attr("height",h);
  const bySector=d3.group(STOCKS,d=>d.sector);
- const root=d3.hierarchy({children:Array.from(bySector,([sector,items])=>({sector,children:items}))}).sum(d=>d.weight).sort((a,b)=>b.value-a.value);
+ const root=d3.hierarchy({children:Array.from(bySector,([sector,items])=>({sector,children:items}))}).sum(d=>{
+  const q=quotes[d.s],sh=shares[d.s];
+  if(q&&typeof q.c==="number"&&typeof sh==="number")return q.c*sh*1e6;
+  return d.weight*FALLBACK_CAP_PER_WEIGHT;
+ }).sort((a,b)=>b.value-a.value);
  d3.treemap()
    .tile(portrait ? d3.treemapSliceDice : d3.treemapSquarify)
    .size([w,h]).paddingOuter(4).paddingTop(20).paddingInner(1.5).round(true)(root);
@@ -106,7 +143,8 @@ function render(quotes){
   if(bh>32&&dp!=null){g.append("text").attr("x",bw/2).attr("y",bh/2+fs*0.75).attr("text-anchor","middle").attr("dominant-baseline","middle").attr("fill","rgba(255,255,255,0.85)").attr("font-size",Math.max(8,fs*0.5)).text((dp>=0?"+":"")+dp.toFixed(2)+"%");}});
  cell.on("click",function(event,d){
   const q=quotes[d.data.s];const dp=q&&q.dp!=null?q.dp:null;const price=q&&q.c!=null?q.c:null;
-  tip.innerHTML=`<div class="t-sym">${d.data.s}</div><div class="t-name">${d.data.n}</div>`+(price!=null?`<div class="t-row"><span>가격</span><span>$${price.toFixed(2)}</span></div>`:"")+(dp!=null?`<div class="t-row"><span>등락</span><span style="color:${dp>=0?'#2ecc71':'#e74c3c'}">${dp>=0?'+':''}${dp.toFixed(2)}%</span></div>`:`<div class="t-row"><span>데이터</span><span>-</span></div>`);
+  const sh=shares[d.data.s];const cap=(price!=null&&typeof sh==="number")?price*sh*1e6:null;const capText=formatCapUSD(cap);
+  tip.innerHTML=`<div class="t-sym">${d.data.s}</div><div class="t-name">${d.data.n}</div>`+(price!=null?`<div class="t-row"><span>가격</span><span>$${price.toFixed(2)}</span></div>`:"")+(dp!=null?`<div class="t-row"><span>등락</span><span style="color:${dp>=0?'#2ecc71':'#e74c3c'}">${dp>=0?'+':''}${dp.toFixed(2)}%</span></div>`:`<div class="t-row"><span>데이터</span><span>-</span></div>`)+(capText?`<div class="t-row"><span>시가총액</span><span>${capText}</span></div>`:"");
   tip.style.opacity=1;
   const r=chartEl.getBoundingClientRect();
   let x=event.clientX-r.left+12,y=event.clientY-r.top+12;
@@ -120,7 +158,17 @@ function render(quotes){
 
 function setStatus(cls){document.getElementById("dot").className="dot"+(cls?" "+cls:"");}
 async function fetchQuote(sym){const url=`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${API_KEY}`;const res=await fetch(url);if(!res.ok)throw new Error("HTTP "+res.status);return res.json();}
+async function fetchProfile(sym){const url=`https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(sym)}&token=${API_KEY}`;const res=await fetch(url);if(!res.ok)throw new Error("HTTP "+res.status);return res.json();}
 const quotes={};
+async function loadShares(){
+ const missing=STOCKS.filter(st=>shares[st.s]==null);
+ if(missing.length===0)return;
+ const batchSize=25,delayMs=1100;
+ for(let i=0;i<missing.length;i+=batchSize){const batch=missing.slice(i,i+batchSize);
+  await Promise.all(batch.map(async st=>{try{const p=await fetchProfile(st.s);if(p&&typeof p.shareOutstanding==="number"&&p.shareOutstanding>0)shares[st.s]=p.shareOutstanding;}catch(e){}}));
+  render(quotes);if(i+batchSize<missing.length)await new Promise(r=>setTimeout(r,delayMs));}
+ saveSharesCache();
+}
 async function loadAll(){
  document.getElementById("lastUpdate").textContent="불러오는 중…";setStatus("live");
  const batchSize=25,delayMs=1100;let failed=0;
@@ -131,7 +179,10 @@ async function loadAll(){
  setStatus(failed>15?"err":"live");
 }
 function initDate(){const d=new Date();const days=["일","월","화","수","목","금","토"];document.getElementById("date").textContent=`${d.getMonth()+1}/${d.getDate()} ${days[d.getDay()]}`;}
-initDate();render(quotes);loadAll();
+initDate();render(quotes);
+// 발행주식수(시총 계산용)를 먼저 받아온 뒤 가격을 불러온다. 캐시가 있으면
+// loadShares는 즉시 반환되므로 재방문 시에는 지연이 거의 없다.
+(async function init(){await loadShares();await loadAll();})();
 document.getElementById("refresh").addEventListener("click",loadAll);
 let rt;window.addEventListener("resize",()=>{clearTimeout(rt);rt=setTimeout(()=>render(quotes),150);});
 window.addEventListener("orientationchange",()=>{setTimeout(()=>render(quotes),300);});
